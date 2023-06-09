@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+
+<!--测试内容-->
+<head> 
+<meta charset="UTF-8">
+<title>webGL-演示</title>
+<!-- 引入gl-matrix工具库 https://github.com/toji/gl-matrix -->
+<script type="text/javascript" src="dist/gl-matrix-min.js"></script>
+</head>
+
+<body>
+	<div style="width: 100%; height: 300px; background:white; margin-top: 100px;">
+		<canvas id="glCanvas" width="400" height="300">
+		</canvas>
+	</div>
+	<div id="glInfo">是否支持WebGL？<a id="glSupport"></a></div>
+</body>
+
+</html>
+
+<style type="text/css">
+#glInfo {margin-top: 100px; color: green; font-size: 20px; width: 100%; text-align: center;}
+</style>
+
+<script>
+const { mat4, mat3, vec3 } = glMatrix; //引入矩阵数学库
+var gl = null; //opengl上下文
+var canvas = null; //绘制context
+var program = null; //和shader交互通道
+var vertexBuffer = 0; //顶点缓冲区对象
+var projectionMatrix = null; //投影矩阵
+var modelMatrix = null; //模型视图矩阵
+var textureObj = null; //纹理对象
+var deltaTime = 0.0; //两次绘制时间间隔
+var elapsedTime = 0.0; //流逝的总时间
+var lastRenderTime = 0.0; //上次绘制时候的时间戳
+var modelZ = 4; //物体Z的位置
+const vsShader = "\
+	attribute vec4 position;\
+	attribute vec2 uv;\
+  uniform mat4 projectionMatrix;\
+  uniform mat4 modelMatrix;\
+	varying vec2 fragUV;\
+	void main(void) {\
+		fragUV = uv;\
+		gl_Position = projectionMatrix * modelMatrix * position;\
+	}\
+";
+const fsShader = "\
+  precision highp float;\
+  varying vec2 fragUV;\
+  uniform sampler2D diffuseMap;\
+	void main() {\
+    vec4 materialColor = texture2D(diffuseMap, fragUV);\
+		gl_FragColor = materialColor;\
+	}\
+";
+const triangleData = [
+    // 前
+    0.5, -0.5, 0.5,
+    0.5, 0.5, 0.5,
+    -0.5, 0.5, 0.5,
+    -0.5, -0.5, 0.5,
+    // 纹理坐标
+    1.0, 0.0, 0.0,
+    1.0, 1.0, 0.0,
+    0.0, 1.0, 0.0,
+    0.0, 0.0, 0.0,
+    // 左
+    -0.5, 0.5, 0.5,
+    -0.5, 0.5, -0.5,
+    -0.5, -0.5, -0.5,
+    -0.5, -0.5, 0.5,
+    // 纹理坐标
+    1.0, 1.0, 0.0,
+    0.0, 1.0, 0.0,
+    0.0, 0.0, 0.0,
+    1.0, 0.0, 0.0,
+    // 右
+    0.5, -0.5, 0.5,
+    0.5, -0.5, -0.5,
+    0.5, 0.5, -0.5,
+    0.5, 0.5, 0.5,
+    // 纹理坐标
+    0.0, 0.0, 0.0,
+    1.0, 0.0, 0.0,
+    1.0, 1.0, 0.0,
+    0.0, 1.0, 0.0,
+    // 后
+    0.5, -0.5, -0.5,
+    -0.5, -0.5, -0.5,
+    -0.5, 0.5, -0.5,
+    0.5, 0.5, -0.5,
+    // 纹理坐标
+    0.0, 0.0, 0.0,
+    1.0, 0.0, 0.0,
+    1.0, 1.0, 0.0,
+    0.0, 1.0, 0.0,
+    // 上
+    0.5, 0.5, 0.5,
+    0.5, 0.5, -0.5,
+    -0.5, 0.5, -0.5,
+    -0.5, 0.5, 0.5,
+    // 纹理坐标
+    1.0, 0.0, 0.0,
+    1.0, 1.0, 0.0,
+    0.0, 1.0, 0.0,
+    0.0, 0.0, 0.0,
+    // 下
+    0.5, -0.5, 0.5,
+    -0.5, -0.5, 0.5,
+    -0.5, -0.5, -0.5,
+    0.5, -0.5, -0.5,
+    // 纹理坐标
+    1.0, 0.0, 0.0,
+    1.0, 1.0, 0.0,
+    0.0, 1.0, 0.0,
+    0.0, 0.0, 0.0,
+];
+// 加载的生命周期
+window.onload = function() {
+  setupGLEnv('glCanvas');
+  resize(canvas.parentElement.clientWidth, canvas.parentElement.clientHeight - 1);
+  renderLoop();
+}
+// 窗口尺寸变化通知
+window.onresize = function() {
+  resize(canvas.parentElement.clientWidth, canvas.parentElement.clientHeight - 1);
+}
+// 设置context尺寸
+function resize(newWidth, newHeight) {
+	canvas.width = newWidth;
+  canvas.height = newHeight;
+	gl.viewport(0,0,newWidth,newHeight);
+  // 透视投影
+  const zNear = 0.1, zFar = 10.0, fieldOfView = 80.0;
+  const aspect = newWidth / newHeight;
+  perspectiveMatrix = mat4.create();
+  mat4.perspective(perspectiveMatrix, fieldOfView / 180.0 * Math.PI, aspect, zNear, zFar);
+  projectionMatrix = perspectiveMatrix;
+  // 正交投影
+  // orthoProjectionMatrix = mat4.create();
+  // mat4.ortho(orthoProjectionMatrix, -newWidth/2, newWidth/2, -newHeight/2, newHeight/2, zNear, zFar);
+  // projectionMatrix = orthoProjectionMatrix;
+}
+// 屏幕刷新
+function renderLoop() {
+  const now = (new Date()).getTime();
+  deltaTime = (now - lastRenderTime) / 1000.0; //转毫秒
+  lastRenderTime = now;
+  elapsedTime += deltaTime;
+
+  // 设置第一个model matrix
+  var rotateMatrix = mat4.create();
+  var translateMatrix = mat4.create();
+  var scaleMatrix = mat4.create();
+  var tmpMatrix = mat4.create();
+  // 设置 旋转->平移->缩放 动起来
+  mat4.rotate(rotateMatrix, rotateMatrix, elapsedTime, vec3.fromValues(1, 1, 1));
+  mat4.translate(translateMatrix, translateMatrix, vec3.fromValues(0, 0, -modelZ));
+  mat4.scale(scaleMatrix, scaleMatrix, vec3.fromValues(4, 4, 1.0));
+  tmpMatrix = mat4.multiply(tmpMatrix, translateMatrix, rotateMatrix);
+  mat4.multiply(modelMatrix, scaleMatrix, tmpMatrix);
+
+  render(deltaTime, elapsedTime);
+  //与浏览器刷新频率一致的刷新定时器
+  requestAnimationFrame(renderLoop);
+}
+// 获取opengl句柄
+function setupGLEnv(canvasID) {
+  canvas = document.getElementById(canvasID);
+  gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+  if (!gl) {
+    document.getElementById('glSupport').text = '您的浏览器竟然不支持WebGL';
+  } else {
+    document.getElementById('glSupport').text = gl.getParameter(gl.VERSION);
+  }
+	initOpenGL();
+	program = makeProgram();
+	vertexBuffer = createBufferData();
+  makeTexture();
+}
+// OpenGL状态设置及其他初始化
+function initOpenGL() {
+	// 清除颜色
+  gl.clearColor(1.0, 1.0, 1.0, 1.0);
+	// 启用深度测试
+  gl.enable(gl.DEPTH_TEST);
+	// 开启背面剔除
+	gl.enable(gl.CULL_FACE);
+	gl.cullFace(gl.BACK);
+  // 数据初始化
+  modelMatrix = mat4.create();
+  projectionMatrix = mat4.create();
+  lastRenderTime = (new Date()).getTime();
+}
+// 静态编译的一般流程：code->编译->链接->run
+function makeProgram() {
+  // 创建渲染程序
+  program = gl.createProgram();
+  // 校验
+  if (program == gl.FALSE) {
+	return 0;
+  }
+  // 创建顶点着色器
+  vertexShader = compileShaders(vsShader, gl.VERTEX_SHADER);
+  // 创建片段着色器
+  fragmentShader = compileShaders(fsShader, gl.FRAGMENT_SHADER);
+  // 将顶点着色器添加到程序中
+  gl.attachShader(program, vertexShader);
+  // 将片段着色器添加到程序中
+  gl.attachShader(program, fragmentShader);
+  // 链接program
+  gl.linkProgram(program);
+  // 校验
+  if (gl.getProgramParameter(program, gl.LINK_STATUS) == gl.FALSE) {
+    console.log('Unable to initialize the shader program: ' + gl.getProgramInfoLog(program));
+  } else {
+	  console.log('initialize the shader program success!');
+  }
+  return program;
+}
+// glsl编译
+function compileShaders(shaderSrc, shaderType) {
+  // 创建着色器
+  shader = gl.createShader(shaderType);
+  if (shader == gl.FALSE || shaderSrc.length == 0) {
+    return null;
+  }
+  // 将着色器代码附着到着色器对象上
+  gl.shaderSource(shader, shaderSrc);
+  // 编译着色器
+  gl.compileShader(shader);
+  // 检查是否编译成功
+  if (gl.getShaderParameter(shader, gl.COMPILE_STATUS) == gl.FALSE) {
+    console.log('An error occurred compiling the shaders: ' + gl.getShaderInfoLog(shader));
+	  // 释放
+    gl.deleteShader(shader);
+    return null;
+  }
+  return shader;
+}
+// 创建顶点和颜色缓冲区对象，只需创建一次绑定后可以多次使用
+function createBufferData() {
+	// 创建缓冲区对象
+	buffer = gl.createBuffer();
+	// 将缓冲区对象绑定到目标
+	gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+	// 向缓冲区对象中写入数据
+	gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(triangleData), gl.STATIC_DRAW);
+	return buffer;
+}
+// 每帧刷新
+function render(deltaTime, elapesdTime) {
+	gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  
+	// 使用glsl小程序，开启顶点数组缓冲
+	gl.useProgram(program);
+	gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+  
+	// 启用Shader中的两个属性
+  positionAttribLocation = gl.getAttribLocation(program, "position");
+  gl.enableVertexAttribArray(positionAttribLocation);
+  // 设置纹理
+  uvLoc = gl.getAttribLocation(program, 'uv');
+  gl.enableVertexAttribArray(uvLoc);
+  
+  // 为shader中的position和color赋值
+  // glVertexAttribPointer (GLuint indx, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const GLvoid* ptr)
+  // indx: 上面Get到的Location
+  // size: 有几个类型为type的数据，比如位置有x,y,z三个GLfloat元素，值就为3
+  // type: 一般就是数组里元素数据的类型
+  // normalized: 暂时用不上
+  // stride: 每一个点包含几个byte，本例中就是6个GLfloat，x,y,z,r,g,b
+  // ptr: 数据开始的指针，位置就是从头开始，颜色则跳过x个GLFloat的大小，GLFloat长度为4
+  gl.vertexAttribPointer(positionAttribLocation, 3, gl.FLOAT, gl.FALSE, 3 * 4, 0 * 3 * 4);
+  gl.vertexAttribPointer(uvLoc, 2, gl.FLOAT, false, 3 * 4, 4 * 3 * 4);
+  // 设置投影矩阵
+  var transformLoc = gl.getUniformLocation(program, 'projectionMatrix');
+  gl.uniformMatrix4fv(transformLoc, false, projectionMatrix);
+  // 设置模型视图矩阵
+  var modelLoc = gl.getUniformLocation(program, 'modelMatrix');
+  gl.uniformMatrix4fv(modelLoc, false, modelMatrix);
+
+  if (textureObj.isReady) {
+    var diffuseLoc = gl.getUniformLocation(program, "diffuseMap");
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, textureObj);
+    gl.uniform1i(diffuseLoc, 0);
+  }
+
+  gl.drawArrays(gl.TRIANGLE_FAN, 0, 4); //前
+  gl.drawArrays(gl.TRIANGLE_FAN, 8, 4); //左
+  gl.drawArrays(gl.TRIANGLE_FAN, 16, 4); //右
+  gl.drawArrays(gl.TRIANGLE_FAN, 24, 4); //后
+  gl.drawArrays(gl.TRIANGLE_FAN, 32, 4); //上
+  gl.drawArrays(gl.TRIANGLE_FAN, 40, 4); //下
+}
+// 加载纹理数据
+function makeTexture() {
+  textureObj = gl.createTexture();
+  textureObj.isReady = false;
+  tmpImage = new Image();
+  tmpImage.crossOrigin = '';
+  tmpImage.onload = function () {
+    //绑定纹理对象
+    gl.bindTexture(gl.TEXTURE_2D, textureObj);
+    //设置最大最小过滤属性
+    gl.texParameterf(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameterf(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    //设置纹理和物体表面目标颜色组合函数
+    // gl.texEnvf (gl.TEXTURE_ENV, gl.TEXTURE_ENV_MODE, gl.REPLACE);
+    //为纹理对象填充纹理数据
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, tmpImage);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    textureObj.isReady = true;
+  }
+  tmpImage.src = "https://gimg2.baidu.com/image_search/src=http%3A%2F%2Fd.lanrentuku.com%2Fdown%2Fpng%2F1108%2Fdoubiaoqing%2Fsilly.png&refer=http%3A%2F%2Fd.lanrentuku.com&app=2002&size=f9999,10000&q=a80&n=0&g=0n&fmt=jpeg?sec=1640521929&t=67b919bc71ca87e67ecdf1784d6ed376";
+}
+// 响应键盘，移动物体
+document.onkeydown = function(event) {
+  var e = event || window.event;
+  if (e && e.keyCode == 38) {
+    modelZ += 1;
+  } else if (e && e.keyCode == 40) {
+    modelZ -= 1;
+  }
+}; 
+</script>
